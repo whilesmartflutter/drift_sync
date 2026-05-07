@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.0
+
+### Behavioral change
+
+* `DriftSynchronizer.sync()` is now idempotent: if a sync is already in
+  progress, it returns the in-flight `Future` instead of throwing
+  `InvalidStateException`. Callers (timers, lifecycle hooks, push
+  handlers, refresh gestures) can invoke `sync()` freely without
+  guarding for concurrency.
+
+### Packaging
+
+* `test` moved from `dependencies` to `dev_dependencies`. Avoids
+  cross-version resolution conflicts in consumer apps (Flutter SDK
+  pins of `matcher`/`test_api`, analyzer-version battles with
+  `freezed`). Consumers that import `package:drift_sync_core/testing.dart`
+  must add `test` to their own dev_dependencies.
+
 ## 0.1.0
 
 First substantive release. Pre-1.0 — minor versions may break the API.

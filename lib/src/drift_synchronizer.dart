@@ -44,6 +44,8 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
   SyncState _state = const SyncState.initial();
   SyncState get state => _state;
 
+  Future<void>? _inFlight;
+
   final Set<SyncTypeHandler> typeHandlers;
   final Map<String, SyncTypeHandler> _typeHandlers;
   final TAppDatabase appDatabase;
@@ -104,8 +106,16 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
   }
 
   /// Uploads pending local changes, then downloads server changes.
-  Future<void> sync() async {
-    _preventConcurrentSync();
+  ///
+  /// Idempotent: if a sync is already in progress, returns the in-flight
+  /// Future instead of starting a new run. Callers can safely invoke
+  /// [sync] from timers, lifecycle hooks, push handlers, or refresh
+  /// gestures without guarding for concurrency.
+  Future<void> sync() {
+    return _inFlight ??= _runSync().whenComplete(() => _inFlight = null);
+  }
+
+  Future<void> _runSync() async {
     _updateState(state.start());
     try {
       final concluded = await uploadLocalChanges();
@@ -127,14 +137,6 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
 
   void cancel() {
     _updateState(state.cancel());
-  }
-
-  void _preventConcurrentSync() {
-    if (state.isSynchronizing) {
-      throw const InvalidStateException(
-        message: "there is another synchronization already running",
-      );
-    }
   }
 
   /**********************************
