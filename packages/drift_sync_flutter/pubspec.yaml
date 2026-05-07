@@ -1,0 +1,27 @@
+name: drift_sync_flutter
+description: Flutter trigger surface for offline-first apps. Combines lifecycle, connectivity, and a periodic timer behind a single attach/detach API.
+version: 0.1.0
+homepage: https://github.com/whilesmartflutter/drift_sync
+repository: https://github.com/whilesmartflutter/drift_sync
+issue_tracker: https://github.com/whilesmartflutter/drift_sync/issues
+topics:
+  - sync
+  - offline-first
+  - flutter
+  - lifecycle
+
+resolution: workspace
+
+environment:
+  sdk: ^3.6.0
+  flutter: ">=3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  internet_connection_checker_plus: ^2.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  lints: ^4.0.0
