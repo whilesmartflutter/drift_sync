@@ -130,6 +130,10 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
       }
 
       await downloadServerChanges();
+    } on CancelException catch (_) {
+      _logger.finest('sync cancelled by user');
+    } on UnavailableException catch (_) {
+      _logger.warning('sync stopped - server unavailable');
     } finally {
       _updateState(state.stop());
     }
