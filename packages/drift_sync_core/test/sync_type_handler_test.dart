@@ -2,10 +2,11 @@ import 'package:drift_sync_core/drift_sync_core.dart';
 import 'package:test/test.dart';
 
 class _Item {
-  const _Item({required this.clientId, this.lastSyncedAt});
+  const _Item({required this.clientId, this.lastSyncedAt, this.updatedAt});
 
   final String clientId;
   final DateTime? lastSyncedAt;
+  final DateTime? updatedAt;
 }
 
 class _RecordingTx implements SyncCommitTx {
@@ -74,6 +75,11 @@ class _FakeHandler extends SyncTypeHandler<_Item, String, int> {
 
   @override
   Future<_Item> assignClientId(_Item item) async => item;
+}
+
+class _CursorFieldHandler extends _FakeHandler {
+  @override
+  DateTime? getCursorTimestamp(_Item e) => e.updatedAt;
 }
 
 void main() {
@@ -153,8 +159,8 @@ void main() {
     });
 
     test(
-        'cursorAdvanceTo ignores skipped (empty clientId) items even if they '
-        'have a timestamp', () async {
+        'cursorAdvanceTo includes skipped (empty clientId) items so they are '
+        'not re-fetched forever', () async {
       final tSkipped = DateTime.utc(2027, 1, 1);
       final tPersisted = DateTime.utc(2026, 5, 1);
 
@@ -164,8 +170,22 @@ void main() {
       ];
 
       final outcome = await handler.persistLocal(items, tx);
-      expect(outcome.cursorAdvanceTo, tPersisted,
-          reason: 'cursor must not advance past skipped items');
+      expect(outcome.cursorAdvanceTo, tSkipped,
+          reason: 'skipped items were returned by the server and must '
+              'advance the cursor; client-id assignment picks them up');
+    });
+
+    test('cursorAdvanceTo uses getCursorTimestamp when overridden', () async {
+      final cursorHandler = _CursorFieldHandler();
+      final tLastSynced = DateTime.utc(2026, 5, 1);
+      final tUpdated = DateTime.utc(2026, 6, 1);
+
+      final items = [
+        _Item(clientId: 'a', lastSyncedAt: tLastSynced, updatedAt: tUpdated),
+      ];
+
+      final outcome = await cursorHandler.persistLocal(items, tx);
+      expect(outcome.cursorAdvanceTo, tUpdated);
     });
 
     test('empty input produces empty outcome', () async {

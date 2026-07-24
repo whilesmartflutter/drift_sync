@@ -5,6 +5,7 @@ export 'src/claimable.dart';
 export 'src/drift_synchronizer.dart';
 export 'src/entity_sync_state.dart';
 export 'src/exceptions/exceptions.dart';
+export 'src/failure_class.dart';
 export 'src/local_change.dart';
 export 'src/local_sync_metadata.dart';
 // Logging and crash reporting

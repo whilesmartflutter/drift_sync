@@ -19,6 +19,14 @@ abstract class SyncTypeHandler<TEntity, TKey, TServerKey> {
   // Get the server ID (int) from an entity
   DateTime? getLastSyncedAt(TEntity entity);
 
+  /// Timestamp used to advance the down-sync cursor after persisting a page.
+  ///
+  /// Must be on the same timeline the server filters `synced_since` against
+  /// (typically `updated_at`); otherwise rows whose filter field is ahead of
+  /// the cursor are re-fetched on every sync forever. Defaults to
+  /// [getLastSyncedAt] for backwards compatibility.
+  DateTime? getCursorTimestamp(TEntity entity) => getLastSyncedAt(entity);
+
   // Get the revision from an entity
   String getRev(TEntity entity);
 
@@ -32,6 +40,16 @@ abstract class SyncTypeHandler<TEntity, TKey, TServerKey> {
   Future<void> upsertLocal(TEntity entity);
   Future<void> upsertAllLocal(List<TEntity> list);
   // Future<void> updateLocalSyncMetadata(TEntity entity);
+
+  /// Whether [entity], as delivered by the server, can be persisted locally
+  /// right now.
+  ///
+  /// Return false when a local dependency (e.g. a referenced parent row) is
+  /// not present yet — the orchestrator parks the item via
+  /// [SynchronizerDb.parkRemoteItem] and retries it on later cycles, so the
+  /// consumer database must implement the parking contract before a handler
+  /// overrides this. Deletions should always return true.
+  Future<bool> shouldPersistLocal(TEntity entity) async => true;
 
   /// Persist a single entity. Equivalent to [persistLocal] with a one-item
   /// list, but constructs the list inside the type-parameterized scope so
@@ -47,33 +65,43 @@ abstract class SyncTypeHandler<TEntity, TKey, TServerKey> {
   /// Persist a batch to local storage and return a typed outcome the
   /// orchestrator uses to advance its cursor.
   ///
-  /// Default impl calls [upsertAllLocal] inside [tx] and reports any
-  /// entity with an empty `clientId` as [Skipped] ([MissingClientId]).
-  /// Override to track real per-item failures, dependency-not-met skips,
-  /// or stale-revision skips.
+  /// Default impl reports entities with an empty `clientId` as [Skipped]
+  /// ([MissingClientId]), defers entities failing [shouldPersistLocal]
+  /// ([DependencyNotReady]), and writes the rest via [upsertAllLocal]
+  /// inside [tx]. Override to track real per-item failures or
+  /// stale-revision skips.
   Future<PersistOutcome<TEntity>> persistLocal(
     List<TEntity> entities,
     SyncCommitTx tx,
   ) async {
-    await tx.runWrite(() async {
-      await upsertAllLocal(entities);
-    });
-
     final persisted = <TEntity>[];
     final skipped = <Skipped<TEntity>>[];
     DateTime? cursor;
 
     for (final entity in entities) {
+      // Skipped rows still advance the cursor: they were returned by the
+      // server, so leaving the cursor behind them would re-fetch them on
+      // every sync. Empty-clientId rows are claimed by client-id
+      // reconciliation; dependency-deferred rows are parked and retried.
+      final ts = getCursorTimestamp(entity);
+      if (ts != null && (cursor == null || ts.isAfter(cursor))) {
+        cursor = ts;
+      }
+
       if (getClientId(entity).isEmpty) {
         skipped.add(Skipped(item: entity, reason: const MissingClientId()));
         continue;
       }
-      persisted.add(entity);
-      final ts = getLastSyncedAt(entity);
-      if (ts != null && (cursor == null || ts.isAfter(cursor))) {
-        cursor = ts;
+      if (!await shouldPersistLocal(entity)) {
+        skipped.add(Skipped(item: entity, reason: const DependencyNotReady()));
+        continue;
       }
+      persisted.add(entity);
     }
+
+    await tx.runWrite(() async {
+      await upsertAllLocal(persisted);
+    });
 
     return PersistOutcome<TEntity>(
       persisted: persisted,
@@ -93,6 +121,15 @@ abstract class SyncTypeHandler<TEntity, TKey, TServerKey> {
   // Future<List<TEntity>> getRemoteChangeByTime(DateTime time);
   Future<TEntity> putRemote(TEntity entity);
   Future<void> deleteRemote(TEntity entity);
+
+  /// Pushes a freshly assigned client id for a server-created entity during
+  /// client-id reconciliation.
+  ///
+  /// Defaults to [putRemote] (full update). Override to send a minimal
+  /// payload (client id + updated_at) so business validation on unrelated
+  /// fields can never veto the claim. Must return the updated entity as the
+  /// server now stores it.
+  Future<TEntity> claimClientId(TEntity entity) => putRemote(entity);
 
   Future<TEntity> unmarshal(Map<String, dynamic> entityBytes);
   Map<String, dynamic> marshal(TEntity entity);

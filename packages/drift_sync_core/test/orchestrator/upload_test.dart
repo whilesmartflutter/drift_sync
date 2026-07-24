@@ -1,7 +1,17 @@
+import 'package:dio/dio.dart';
 import 'package:drift_sync_core/drift_sync_core.dart';
 import 'package:test/test.dart';
 
 import '../_fakes.dart';
+
+DioException _dio(int statusCode) {
+  final options = RequestOptions(path: '/x');
+  return DioException(
+    requestOptions: options,
+    type: DioExceptionType.badResponse,
+    response: Response(requestOptions: options, statusCode: statusCode),
+  );
+}
 
 PendingLocalChange _put({
   required String entityType,
@@ -205,6 +215,62 @@ void main() {
       await s.uploadLocalChanges();
       expect(sawTransactionDuringUpsert, isTrue,
           reason: 'persistLocal must run inside a transaction');
+    });
+  });
+
+  group('failure classification on upload', () {
+    TestSynchronizer restSync({int budget = 3}) => TestSynchronizer(
+          appDatabase: db,
+          typeHandlers: {wallet},
+          dependencyManager: DefaultSyncDependencyManager(),
+          requestAuthorizationService: FakeAuthService(),
+          skipClientIdReconciliation: true,
+          classifyFailure: restFailureClassifier,
+          unknownFailureRetryBudget: budget,
+        );
+
+    test('permanent failure (4xx) quarantines the change', () async {
+      await db.insertLocalChange(_put(entityType: 'wallet', clientId: 'a'));
+      wallet.putRemoteThrows.add(_dio(422));
+
+      await restSync().uploadLocalChanges();
+
+      final row = db.allPending.single;
+      expect(row.quarantinedAt, isNotNull);
+      expect(row.attemptCount, 1);
+    });
+
+    test('transient failure (5xx) stays retryable', () async {
+      await db.insertLocalChange(_put(entityType: 'wallet', clientId: 'a'));
+      wallet.putRemoteThrows.add(_dio(500));
+
+      await restSync().uploadLocalChanges();
+
+      final row = db.allPending.single;
+      expect(row.quarantinedAt, isNull);
+      expect(row.attemptCount, 1);
+    });
+
+    test('unknown failure escalates once the retry budget is spent',
+        () async {
+      await db.insertLocalChange(
+        _put(entityType: 'wallet', clientId: 'a').copyWith(attemptCount: 2),
+      );
+      wallet.putRemoteThrows.add(Exception('boom'));
+
+      await restSync(budget: 3).uploadLocalChanges();
+
+      expect(db.allPending.single.quarantinedAt, isNotNull,
+          reason: 'attempt 3 of budget 3 must escalate');
+    });
+
+    test('unknown failure below the budget stays retryable', () async {
+      await db.insertLocalChange(_put(entityType: 'wallet', clientId: 'a'));
+      wallet.putRemoteThrows.add(Exception('boom'));
+
+      await restSync(budget: 3).uploadLocalChanges();
+
+      expect(db.allPending.single.quarantinedAt, isNull);
     });
   });
 }

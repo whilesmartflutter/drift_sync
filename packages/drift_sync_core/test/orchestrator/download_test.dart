@@ -1,7 +1,17 @@
+import 'package:dio/dio.dart';
 import 'package:drift_sync_core/drift_sync_core.dart';
 import 'package:test/test.dart';
 
 import '../_fakes.dart';
+
+DioException _dio(int statusCode) {
+  final options = RequestOptions(path: '/x');
+  return DioException(
+    requestOptions: options,
+    type: DioExceptionType.badResponse,
+    response: Response(requestOptions: options, statusCode: statusCode),
+  );
+}
 
 void main() {
   late FakeSynchronizerDb db;
@@ -44,25 +54,25 @@ void main() {
           reason: 'cursor = max lastSyncedAt of persisted items');
     });
 
-    test('skips items with empty clientId; cursor ignores them', () async {
+    test('skips items with empty clientId; cursor still advances past them',
+        () async {
       final t1 = DateTime.utc(2026, 5, 1);
-      final tFuture = DateTime.utc(2030, 1, 1);
+      final tUnclaimed = DateTime.utc(2030, 1, 1);
 
       wallet.remoteItems[1] =
           TestEntity(clientId: 'a', id: 1, lastSyncedAt: t1);
-      // unclaimed item with future timestamp — must NOT advance cursor
       wallet.remoteItems[2] =
-          TestEntity(clientId: '', id: 2, lastSyncedAt: tFuture);
+          TestEntity(clientId: '', id: 2, lastSyncedAt: tUnclaimed);
 
       await sync.downloadServerChanges();
 
       expect(wallet.localItems.keys, ['a']);
-      expect(db.allMetadata['wallet']?.lastSyncedAt, t1,
-          reason: 'cursor must not advance past skipped items');
+      expect(db.allMetadata['wallet']?.lastSyncedAt, tUnclaimed,
+          reason: 'unclaimed items were returned by the server and must '
+              'advance the cursor, or they are re-fetched on every sync');
     });
 
-    test('all-empty-clientId batch leaves cursor null (no clobber)',
-        () async {
+    test('all-empty-clientId batch still advances the cursor', () async {
       // Pre-populate cursor.
       await db.updateEntityLocalSyncMetadata(
         entityType: 'wallet',
@@ -77,9 +87,9 @@ void main() {
 
       await sync.downloadServerChanges();
 
-      expect(db.allMetadata['wallet']?.lastSyncedAt, DateTime.utc(2025, 12, 1),
-          reason:
-              'unclaimed-only response must NOT clobber an existing cursor');
+      expect(db.allMetadata['wallet']?.lastSyncedAt, DateTime.utc(2026, 5, 1),
+          reason: 'client-id assignment fetches unclaimed rows separately; '
+              'holding the cursor back would re-fetch them forever');
     });
 
     test('full sync (no prior cursor) calls deleteLocalNotIn', () async {
@@ -181,6 +191,200 @@ void main() {
 
       await s.downloadServerChanges();
       expect(calls, ['wallet:fetch', 'transaction:fetch']);
+    });
+  });
+
+  group('cursorRewind', () {
+    test('sends the stored cursor unmodified when not configured', () async {
+      final t = DateTime.utc(2026, 5, 1, 10, 0, 30);
+      await db.updateEntityLocalSyncMetadata(
+        entityType: 'wallet',
+        lastSyncedAt: t,
+      );
+
+      await sync.downloadServerChanges();
+
+      expect(wallet.syncedSinceCalls.single, t);
+    });
+
+    test('rewinds the cursor by the configured duration', () async {
+      final t = DateTime.utc(2026, 5, 1, 10, 0, 30);
+      await db.updateEntityLocalSyncMetadata(
+        entityType: 'wallet',
+        lastSyncedAt: t,
+      );
+      final rewindSync = TestSynchronizer(
+        appDatabase: db,
+        typeHandlers: {wallet},
+        dependencyManager: DefaultSyncDependencyManager(),
+        requestAuthorizationService: FakeAuthService(),
+        skipClientIdReconciliation: true,
+        cursorRewind: const Duration(seconds: 1),
+      );
+
+      await rewindSync.downloadServerChanges();
+
+      expect(wallet.syncedSinceCalls.single,
+          t.subtract(const Duration(seconds: 1)));
+    });
+
+    test('full fetch (no cursor) still sends null', () async {
+      await sync.downloadServerChanges();
+      expect(wallet.syncedSinceCalls.single, isNull);
+    });
+  });
+
+  group('parking (shouldPersistLocal)', () {
+    test('deferred item is parked, others persist, cursor passes all',
+        () async {
+      final tOk = DateTime.utc(2026, 5, 1);
+      final tBlocked = DateTime.utc(2026, 5, 2);
+
+      wallet.remoteItems[1] =
+          TestEntity(clientId: 'a', id: 1, lastSyncedAt: tOk);
+      wallet.remoteItems[2] =
+          TestEntity(clientId: 'b', id: 2, lastSyncedAt: tBlocked);
+      wallet.persistLocalBlock = (e) => e.clientId == 'b';
+
+      await sync.downloadServerChanges();
+
+      expect(wallet.localItems.keys, ['a'],
+          reason: 'blocked item must not be written');
+      expect(db.parkedFor('wallet').keys, ['b']);
+      expect(db.allMetadata['wallet']?.lastSyncedAt, tBlocked,
+          reason: 'parked items must not hold the cursor back');
+    });
+
+    test('parked item persists and unparks once its dependency is met',
+        () async {
+      wallet.remoteItems[1] = const TestEntity(clientId: 'b', id: 2);
+      wallet.persistLocalBlock = (e) => e.clientId == 'b';
+      await sync.downloadServerChanges();
+      expect(db.parkedFor('wallet').keys, ['b']);
+
+      wallet.persistLocalBlock = null;
+      wallet.remoteItems.clear();
+      await sync.downloadServerChanges();
+
+      expect(wallet.localItems.keys, ['b'],
+          reason: 'retry must persist the parked copy');
+      expect(db.parkedFor('wallet'), isEmpty);
+    });
+
+    test('still-blocked parked item stays parked without erroring', () async {
+      wallet.remoteItems[1] = const TestEntity(clientId: 'b', id: 2);
+      wallet.persistLocalBlock = (e) => e.clientId == 'b';
+      await sync.downloadServerChanges();
+
+      wallet.remoteItems.clear();
+      await sync.downloadServerChanges();
+
+      expect(wallet.localItems, isEmpty);
+      expect(db.parkedFor('wallet').keys, ['b']);
+    });
+
+    test('persistable fresher copy drops the still-blocked parked one',
+        () async {
+      final tOld = DateTime.utc(2026, 5, 1);
+      final tNew = DateTime.utc(2026, 5, 3);
+
+      wallet.remoteItems[2] =
+          TestEntity(clientId: 'b', id: 2, lastSyncedAt: tOld);
+      // Only the OLD version has the unmet dependency (e.g. the new
+      // version no longer references the missing parent).
+      wallet.persistLocalBlock = (e) => e.lastSyncedAt == tOld;
+      await sync.downloadServerChanges();
+      expect(db.parkedFor('wallet').keys, ['b']);
+
+      wallet.remoteItems[2] =
+          TestEntity(clientId: 'b', id: 2, lastSyncedAt: tNew);
+      await sync.downloadServerChanges();
+
+      expect(wallet.localItems['b']?.lastSyncedAt, tNew);
+      expect(db.parkedFor('wallet'), isEmpty,
+          reason: 'no stale copy may remain to overwrite newer data later');
+    });
+  });
+
+  group('downloadModelsWithNoClientIds', () {
+    test('a local row with an empty clientId does not block assignment',
+        () async {
+      // Pre-guard bug shape: unclaimed server row also stored locally at ''.
+      wallet.localItems[''] = const TestEntity(clientId: '', id: 103);
+      wallet.remoteUnclaimed = [const TestEntity(clientId: '', id: 103)];
+
+      await sync.downloadModelsWithNoClientIds();
+
+      expect(wallet.putRemoteCalls.map((e) => e.clientId), ['gen_103'],
+          reason: 'the empty-clientId row must not count as adopted');
+    });
+
+    test('a local row with a real clientId is skipped', () async {
+      wallet.localItems['device:x'] =
+          const TestEntity(clientId: 'device:x', id: 103);
+      wallet.remoteUnclaimed = [const TestEntity(clientId: '', id: 103)];
+
+      await sync.downloadModelsWithNoClientIds();
+
+      expect(wallet.putRemoteCalls, isEmpty);
+    });
+
+    test('reconciliation pushes via claimClientId, not putRemote', () async {
+      final claiming = ClaimRecordingHandler(entityType: 'wallet');
+      final s = TestSynchronizer(
+        appDatabase: db,
+        typeHandlers: {claiming},
+        dependencyManager: DefaultSyncDependencyManager(),
+        requestAuthorizationService: FakeAuthService(),
+      );
+      claiming.remoteUnclaimed = [const TestEntity(clientId: '', id: 7)];
+
+      await s.downloadModelsWithNoClientIds();
+
+      expect(claiming.claimCalls, hasLength(1));
+      expect(claiming.putRemoteCalls, isEmpty);
+    });
+
+    test('permanent claim failure does not block dependents', () async {
+      final txn = FakeHandler(entityType: 'transaction');
+      final s = TestSynchronizer(
+        appDatabase: db,
+        typeHandlers: {wallet, txn},
+        dependencyManager: CustomDependencyManager({
+          'transaction': {'wallet'},
+        }),
+        requestAuthorizationService: FakeAuthService(),
+        classifyFailure: restFailureClassifier,
+      );
+      wallet.remoteUnclaimed = [const TestEntity(clientId: '', id: 5)];
+      wallet.putRemoteThrows.add(_dio(422));
+
+      await s.downloadModelsWithNoClientIds();
+
+      expect(txn.noClientIdFetches, 1,
+          reason: 'a permanently rejected claim cannot succeed later; '
+              'it must not hold dependents hostage');
+    });
+
+    test('transient claim failure still blocks dependents', () async {
+      final txn = FakeHandler(entityType: 'transaction');
+      final s = TestSynchronizer(
+        appDatabase: db,
+        typeHandlers: {wallet, txn},
+        dependencyManager: CustomDependencyManager({
+          'transaction': {'wallet'},
+        }),
+        requestAuthorizationService: FakeAuthService(),
+        classifyFailure: restFailureClassifier,
+      );
+      wallet.remoteUnclaimed = [const TestEntity(clientId: '', id: 5)];
+      wallet.putRemoteThrows.add(_dio(500));
+
+      await s.downloadModelsWithNoClientIds();
+
+      expect(txn.noClientIdFetches, 0,
+          reason: 'a retryable failure means the parent may still get its '
+              'client id; dependents wait for the next cycle');
     });
   });
 }

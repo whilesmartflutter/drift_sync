@@ -32,8 +32,15 @@ sealed class SkipReason {
   const SkipReason();
 }
 
-/// Item arrived without a `client_id`; Phase 2 will claim it on a later
-/// cycle. Advancing the cursor past it would lose it.
+/// Item arrived without a `client_id`; client-id reconciliation claims it
+/// on a later cycle, so the cursor may advance past it safely.
 final class MissingClientId extends SkipReason {
   const MissingClientId();
+}
+
+/// [SyncTypeHandler.shouldPersistLocal] returned false: a local dependency
+/// (e.g. a referenced parent row) is not present yet. The orchestrator parks
+/// the item and retries it on later cycles.
+final class DependencyNotReady extends SkipReason {
+  const DependencyNotReady();
 }

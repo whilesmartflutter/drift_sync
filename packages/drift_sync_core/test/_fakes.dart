@@ -28,6 +28,7 @@ class FakeSynchronizerDb with SynchronizerDb {
     PendingLocalChange localChange, {
     Object? error,
     bool persistedToRemote = false,
+    bool quarantine = false,
   }) async {
     if (persistedToRemote) {
       _pending.removeWhere((c) =>
@@ -42,6 +43,8 @@ class FakeSynchronizerDb with SynchronizerDb {
           error: error.toString(),
           concluded: true,
           concludedMoment: DateTime.now(),
+          attemptCount: _pending[i].attemptCount + 1,
+          quarantinedAt: quarantine ? DateTime.now() : null,
         );
       }
     }
@@ -100,10 +103,31 @@ class FakeSynchronizerDb with SynchronizerDb {
     }
   }
 
+  final Map<String, Map<String, ParkedRemoteItem>> _parked = {};
+
+  @override
+  Future<void> parkRemoteItem(ParkedRemoteItem item) async {
+    (_parked[item.entityType] ??= {})[item.clientId] = item;
+  }
+
+  @override
+  Future<List<ParkedRemoteItem>> getParkedRemoteItems(
+    String entityType,
+  ) async =>
+      (_parked[entityType]?.values ?? const Iterable<ParkedRemoteItem>.empty())
+          .toList(growable: false);
+
+  @override
+  Future<void> unparkRemoteItem(String entityType, String clientId) async {
+    _parked[entityType]?.remove(clientId);
+  }
+
   // Test-only inspection helpers.
   List<PendingLocalChange> get allPending => List.unmodifiable(_pending);
   Map<String, LocalSyncMetadata> get allMetadata => Map.unmodifiable(_metadata);
   bool get inTransaction => _txDepth > 0;
+  Map<String, ParkedRemoteItem> parkedFor(String entityType) =>
+      Map.unmodifiable(_parked[entityType] ?? const {});
 }
 
 /// Controllable [SyncTypeHandler] for tests.
@@ -122,9 +146,19 @@ class FakeHandler extends SyncTypeHandler<TestEntity, String, int> {
 
   bool shouldPersistRemoteResult;
 
+  /// When set, entities matching this predicate are deferred by
+  /// [shouldPersistLocal] (unmet local dependency).
+  bool Function(TestEntity)? persistLocalBlock;
+
+  @override
+  Future<bool> shouldPersistLocal(TestEntity entity) async =>
+      !(persistLocalBlock?.call(entity) ?? false);
+
   // Storage
   final Map<String, TestEntity> localItems = {};
   final Map<int, TestEntity> remoteItems = {};
+  final List<DateTime?> syncedSinceCalls = [];
+  int noClientIdFetches = 0;
   List<TestEntity> remoteUnclaimed = [];
   final List<TestEntity> upsertedAll = [];
   final List<String> deletedClientIds = [];
@@ -207,7 +241,11 @@ class FakeHandler extends SyncTypeHandler<TestEntity, String, int> {
     bool? noClientId,
   }) async {
     if (getAllRemoteThrows.isNotEmpty) throw getAllRemoteThrows.removeAt(0);
-    if (noClientId == true) return List.of(remoteUnclaimed);
+    if (noClientId == true) {
+      noClientIdFetches++;
+      return List.of(remoteUnclaimed);
+    }
+    syncedSinceCalls.add(syncedSince);
     return remoteItems.values.where((e) {
       if (syncedSince == null) return true;
       final ts = e.lastSyncedAt;
@@ -324,7 +362,27 @@ class TestSynchronizer extends DriftSynchronizer<FakeSynchronizerDb> {
     required super.requestAuthorizationService,
     super.skipClientIdReconciliation = false,
     super.logger = const NoopSyncLogger(),
+    super.cursorRewind,
+    super.classifyFailure,
+    super.unknownFailureRetryBudget,
   });
+}
+
+/// Handler whose [claimClientId] records calls instead of delegating to
+/// [putRemote].
+class ClaimRecordingHandler extends FakeHandler {
+  ClaimRecordingHandler({required super.entityType});
+
+  final List<TestEntity> claimCalls = [];
+
+  @override
+  Future<TestEntity> claimClientId(TestEntity entity) async {
+    claimCalls.add(entity);
+    final assigned = entity.id ?? remoteItems.length + 1;
+    final stored = entity.copyWith(id: assigned);
+    remoteItems[assigned] = stored;
+    return stored;
+  }
 }
 
 class CustomDependencyManager extends DefaultSyncDependencyManager {

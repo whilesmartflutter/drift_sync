@@ -77,3 +77,22 @@ mixin RestSyncTypeHandler<TEntity, TKey, TServerKey>
   @protected
   bool isNotFound(DioException ex) => ex.response?.statusCode == 404;
 }
+
+/// HTTP-aware [FailureClassifier] for REST-backed handlers.
+///
+/// 5xx, 408, 429, and connection-level failures are [FailureClass.transient];
+/// any other 4xx is [FailureClass.permanent] (the server understood the
+/// request and rejected it — a retry cannot change the outcome).
+FailureClass restFailureClassifier(Object error) {
+  if (error is UnavailableException) return FailureClass.transient;
+  if (error is DioException) {
+    final code = error.response?.statusCode;
+    if (code == null) return FailureClass.transient; // connection-level
+    if (code >= 500 || code == 408 || code == 429) {
+      return FailureClass.transient;
+    }
+    if (code >= 400) return FailureClass.permanent;
+    return FailureClass.unknown;
+  }
+  return defaultFailureClassifier(error);
+}

@@ -12,6 +12,9 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
     SyncLogger logger = const NoopSyncLogger(),
     SyncCrashReporter? crashReporter,
     this.skipClientIdReconciliation = false,
+    this.cursorRewind,
+    this.classifyFailure = defaultFailureClassifier,
+    this.unknownFailureRetryBudget = 10,
   })  : _typeHandlers = _indexHandlersByEntityType(typeHandlers),
         _dependencyManager = dependencyManager,
         _requestAuthorizationService = requestAuthorizationService,
@@ -20,6 +23,25 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
 
   /// Skips client-id reconciliation. Set true for UUID-only schemas.
   final bool skipClientIdReconciliation;
+
+  /// Optional rewind applied to the stored cursor before it is sent as
+  /// `syncedSince`. When null (the default), the cursor is sent unmodified.
+  ///
+  /// Guards against same-second races on servers with second-precision
+  /// timestamps: a row committed in the same second as the cursor, after the
+  /// previous fetch ran, would otherwise be skipped forever by a strict `>`
+  /// filter. Re-fetched boundary rows are harmless (upserts are idempotent).
+  final Duration? cursorRewind;
+
+  /// Routes retry behavior per failure: transient failures retry, permanent
+  /// ones quarantine, unknown ones retry until [unknownFailureRetryBudget]
+  /// then escalate. Default classifier only recognizes transport
+  /// unavailability; REST consumers should pass `restFailureClassifier`.
+  final FailureClassifier classifyFailure;
+
+  /// Failed upload attempts an unknown-class failure is allowed before it is
+  /// escalated to permanent and quarantined.
+  final int unknownFailureRetryBudget;
 
   static Map<String, SyncTypeHandler> _indexHandlersByEntityType(
     Set<SyncTypeHandler> handlers,
@@ -172,6 +194,10 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
         _logger.warning('Server unavailable during upload');
         return false;
       } catch (ex, stackTrace) {
+        final failureClass = classifyFailure(ex);
+        final quarantine = failureClass == FailureClass.permanent ||
+            (failureClass == FailureClass.unknown &&
+                localChange.attemptCount + 1 >= unknownFailureRetryBudget);
         _reportError(
           ex,
           stackTrace,
@@ -180,9 +206,15 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
             'entity_type': localChange.entityType,
             'change_id': localChange.entityId,
             'is_deleted': localChange.deleted.toString(),
+            'failure_class': failureClass.name,
+            'quarantined': quarantine.toString(),
           },
         );
-        await appDatabase.concludeLocalChange(localChange, error: ex);
+        await appDatabase.concludeLocalChange(
+          localChange,
+          error: ex,
+          quarantine: quarantine,
+        );
       }
     }
 
@@ -372,7 +404,8 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
 
         final server = await handler.getLocalByServerId(serverId);
 
-        if (server != null) {
+        // Only a local row with a real client id counts as already adopted.
+        if (server != null && handler.getClientId(server).isNotEmpty) {
           continue;
         }
 
@@ -404,17 +437,24 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
 
       final futureAwait = batch.map((entity) async {
         try {
-          return await handler.putRemote(entity);
+          return await handler.claimClientId(entity);
         } on UnavailableException {
           rethrow;
         } catch (e, stack) {
+          final failureClass = classifyFailure(e);
+          // A permanent rejection can never succeed; reporting it is enough.
+          // Only failures worth retrying block dependents.
+          if (failureClass != FailureClass.permanent) {
+            hadFailure = true;
+          }
           _reportError(
             e,
             stack,
-            reason: 'put_remote_after_client_id',
+            reason: 'claim_client_id',
             context: {
               'handler_type': handler.entityType,
-              'operation': 'put_remote_after_client_id',
+              'operation': 'claim_client_id',
+              'failure_class': failureClass.name,
             },
           );
           return null;
@@ -424,9 +464,7 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
       final responses = await Future.wait(futureAwait);
 
       for (final response in responses) {
-        if (response == null) {
-          hadFailure = true;
-        } else {
+        if (response != null) {
           allResponses.add(response);
         }
       }
@@ -456,6 +494,10 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
           continue;
         }
 
+        // Earlier handlers this cycle may have satisfied the dependencies
+        // of items parked on previous cycles.
+        final parkedClientIds = await _retryParkedRemoteItems(handler);
+
         // 1. Get last sync time for this handler/model
         final localMeta =
             await appDatabase.getLocalSyncMetadata(handler.entityType);
@@ -463,6 +505,8 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
 
         // If lastSyncedAt is null, do a full fetch for this model only
         final isFull = lastSyncedAt == null;
+        final syncedSince =
+            lastSyncedAt?.subtract(cursorRewind ?? Duration.zero);
 
         try {
           // Prefer streaming handlers to keep memory bounded.
@@ -473,7 +517,7 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
             var sawAny = false;
 
             await for (final page in pagedHandler.getAllRemoteStream(
-              syncedSince: isFull ? null : lastSyncedAt,
+              syncedSince: syncedSince,
             )) {
               if (page.isEmpty) continue;
               sawAny = true;
@@ -481,6 +525,7 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
               await appDatabase.transaction(() async {
                 const commitTx = _DirectCommitTx();
                 final outcome = await handler.persistLocal(page, commitTx);
+                await _applyParking(handler, outcome, parkedClientIds);
 
                 if (isFull) {
                   for (final item in outcome.persisted) {
@@ -518,8 +563,8 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
               }
             });
           } else {
-            final changedItems = await handler.getAllRemote(
-                syncedSince: isFull ? null : lastSyncedAt);
+            final changedItems =
+                await handler.getAllRemote(syncedSince: syncedSince);
 
             if (changedItems.isEmpty) {
               _dependencyManager.markSuccessfullySynced(handler);
@@ -530,6 +575,7 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
               const commitTx = _DirectCommitTx();
               final outcome =
                   await handler.persistLocal(changedItems, commitTx);
+              await _applyParking(handler, outcome, parkedClientIds);
 
               if (isFull) {
                 final remoteClientIds =
@@ -585,6 +631,81 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
           info: context,
           fatal: true);
       rethrow;
+    }
+  }
+
+  /// Retries items parked by [SyncTypeHandler.shouldPersistLocal] on earlier
+  /// cycles. Returns the clientIds still parked afterwards, so the caller
+  /// can reconcile them against freshly persisted rows.
+  Future<Set<String>> _retryParkedRemoteItems(
+    SyncTypeHandler<dynamic, dynamic, dynamic> handler,
+  ) async {
+    final parked = await appDatabase.getParkedRemoteItems(handler.entityType);
+    if (parked.isEmpty) return <String>{};
+
+    final remaining = <String>{};
+    for (final item in parked) {
+      try {
+        final entity = await handler.unmarshal(item.data);
+        if (!await handler.shouldPersistLocal(entity)) {
+          remaining.add(item.clientId);
+          continue;
+        }
+        await appDatabase.transaction(() async {
+          const commitTx = _DirectCommitTx();
+          await handler.persistOne(entity, commitTx);
+          await appDatabase.unparkRemoteItem(
+            handler.entityType,
+            item.clientId,
+          );
+        });
+      } on UnavailableException {
+        rethrow;
+      } catch (e, stack) {
+        final failureClass = classifyFailure(e);
+        if (failureClass == FailureClass.permanent) {
+          // E.g. the payload no longer unmarshals; retrying cannot help.
+          await appDatabase.unparkRemoteItem(handler.entityType, item.clientId);
+        } else {
+          remaining.add(item.clientId);
+        }
+        _reportError(
+          e,
+          stack,
+          reason: 'retry_parked_remote_item',
+          context: {
+            'handler_type': handler.entityType,
+            'client_id': item.clientId,
+            'failure_class': failureClass.name,
+          },
+        );
+      }
+    }
+    return remaining;
+  }
+
+  /// Parks [DependencyNotReady] skips and drops a stale parked copy when a
+  /// fresher server version of the same entity just persisted.
+  Future<void> _applyParking(
+    SyncTypeHandler<dynamic, dynamic, dynamic> handler,
+    PersistOutcome<dynamic> outcome,
+    Set<String> parkedClientIds,
+  ) async {
+    for (final item in outcome.persisted) {
+      final clientId = handler.getClientId(item);
+      if (parkedClientIds.remove(clientId)) {
+        await appDatabase.unparkRemoteItem(handler.entityType, clientId);
+      }
+    }
+    for (final skip in outcome.skipped) {
+      if (skip.reason is! DependencyNotReady) continue;
+      final clientId = handler.getClientId(skip.item);
+      await appDatabase.parkRemoteItem(ParkedRemoteItem(
+        entityType: handler.entityType,
+        clientId: clientId,
+        data: handler.marshal(skip.item),
+      ));
+      parkedClientIds.add(clientId);
     }
   }
 }

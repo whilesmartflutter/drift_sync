@@ -1,5 +1,21 @@
 import 'package:drift_sync_core/drift_sync_core.dart';
 
+/// A server-delivered entity whose local dependencies were not met at
+/// persist time, stored (marshalled) until they are.
+final class ParkedRemoteItem {
+  const ParkedRemoteItem({
+    required this.entityType,
+    required this.clientId,
+    required this.data,
+    this.parkedAt,
+  });
+
+  final String entityType;
+  final String clientId;
+  final Map<String, dynamic> data;
+  final DateTime? parkedAt;
+}
+
 /// Contract a consumer database implements so the orchestrator can persist
 /// pending changes, sync metadata, and run transactional commits.
 ///
@@ -10,10 +26,15 @@ mixin SynchronizerDb {
   Future<List<PendingLocalChange>> getPendingLocalChanges();
   Future<void> cancelAllLocalChanges();
   Future<void> clearDatabase();
+  /// Concludes an upload attempt. With [error] set the change stays queued
+  /// for retry (implementations should increment its attempt count); with
+  /// [quarantine] also true the change is permanently parked — excluded from
+  /// [getPendingLocalChanges] — for human review.
   Future<void> concludeLocalChange(
     PendingLocalChange localChange, {
     Object? error,
     bool persistedToRemote = false,
+    bool quarantine = false,
   });
   Future<List<LocalSyncMetadata>> getLocalSyncMetadataList();
   Future<LocalSyncMetadata?> getLocalSyncMetadata(String id);
@@ -31,6 +52,18 @@ mixin SynchronizerDb {
   });
 
   Future<R> transaction<R>(Future<R> Function() body, {bool requireNew = false});
+
+  /// Parking store for down-synced items deferred by
+  /// [SyncTypeHandler.shouldPersistLocal]. The defaults are no-ops (parking
+  /// disabled); a consumer must override all three with persistent storage
+  /// before any handler overrides [SyncTypeHandler.shouldPersistLocal], or
+  /// deferred items are dropped (the cursor has already advanced past them).
+  Future<void> parkRemoteItem(ParkedRemoteItem item) async {}
+  Future<List<ParkedRemoteItem>> getParkedRemoteItems(
+    String entityType,
+  ) async =>
+      const [];
+  Future<void> unparkRemoteItem(String entityType, String clientId) async {}
 
   /// Default impl bridges to [getLocalSyncMetadata]. Override to surface
   /// richer state once you add columns for it.

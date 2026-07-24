@@ -30,6 +30,7 @@ void main() {
 
       final label = switch (reason) {
         MissingClientId() => 'missing',
+        DependencyNotReady() => 'deferred',
       };
 
       expect(label, 'missing');

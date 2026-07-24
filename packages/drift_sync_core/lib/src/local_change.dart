@@ -12,6 +12,14 @@ class PendingLocalChange {
   final String? error;
   final bool dismissed;
 
+  /// Failed upload attempts so far; drives the unknown-failure escalation
+  /// budget.
+  final int attemptCount;
+
+  /// Set when the change was classified as permanently failed; quarantined
+  /// changes are never retried.
+  final DateTime? quarantinedAt;
+
   PendingLocalChange({
     required this.createMoment,
     required this.entityType,
@@ -23,6 +31,8 @@ class PendingLocalChange {
     this.concludedMoment,
     this.error,
     this.dismissed = false,
+    this.attemptCount = 0,
+    this.quarantinedAt,
   });
 
   factory PendingLocalChange.put({
@@ -78,6 +88,8 @@ class PendingLocalChange {
     DateTime? concludedMoment,
     String? error,
     bool? dismissed,
+    int? attemptCount,
+    DateTime? quarantinedAt,
   }) {
     return PendingLocalChange(
       entityType: entityType ?? this.entityType,
@@ -90,6 +102,8 @@ class PendingLocalChange {
       concludedMoment: concludedMoment ?? this.concludedMoment,
       error: error ?? this.error,
       dismissed: dismissed ?? this.dismissed,
+      attemptCount: attemptCount ?? this.attemptCount,
+      quarantinedAt: quarantinedAt ?? this.quarantinedAt,
     );
   }
 }
