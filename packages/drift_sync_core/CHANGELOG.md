@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2
+
+### Improved
+
+* `upload_local_change` crash reports now include the attempt number and
+  a truncated excerpt of the queued payload, so serialization failures
+  (e.g. null type casts during unmarshal) are diagnosable from the crash
+  report alone.
+
 ## 0.3.1
 
 ### Fixed

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:drift_sync_core/drift_sync_core.dart';
 import 'package:meta/meta.dart';
@@ -80,6 +81,18 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
 
   final SyncLogger _logger;
   final SyncCrashReporter? _crashReporter;
+
+  static String _payloadExcerpt(Map<String, dynamic> data,
+      {int maxLength = 2000}) {
+    try {
+      final encoded = jsonEncode(data);
+      return encoded.length > maxLength
+          ? '${encoded.substring(0, maxLength)}…'
+          : encoded;
+    } catch (_) {
+      return data.toString();
+    }
+  }
 
   /// Logs and routes the error to the crash reporter unconditionally.
   void _reportError(
@@ -208,6 +221,11 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
             'is_deleted': localChange.deleted.toString(),
             'failure_class': failureClass.name,
             'quarantined': quarantine.toString(),
+            'attempt': '${localChange.attemptCount + 1}',
+            // The payload is essential for diagnosing unmarshal/serialization
+            // failures, where the exception alone (e.g. a null type cast)
+            // says nothing about which field was at fault.
+            'data': _payloadExcerpt(localChange.data),
           },
         );
         await appDatabase.concludeLocalChange(
