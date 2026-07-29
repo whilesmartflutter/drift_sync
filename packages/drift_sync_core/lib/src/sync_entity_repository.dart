@@ -39,60 +39,78 @@ abstract class SyncEntityRepository<TAppDatabase extends SynchronizerDb,
     }
   }
 
+  /// Outbox ordering: the pending change is enqueued BEFORE the remote
+  /// attempt, so no failure mode (server rejection, crash mid-request) can
+  /// leave a local record invisible to the sync loop. Success removes the
+  /// queued row; failure records the error on it, handing retry/backoff/
+  /// quarantine to the synchronizer.
   Future<(TEntity, DataDestination)> put(TEntity entity) async {
-    // Check authorization before attempting remote operations
+    final pending = _pendingPut(entity);
+    await db.transaction(() => db.insertLocalChange(pending));
+
     final canSync = await requestAuthorizationService.canSync();
     final serverId = syncHandler.getServerId(entity);
-    final remoteCreated =
-        (canSync && serverId != null) ? await putRemote(entity) : null;
-    final created = remoteCreated ?? entity;
-    final ds =
-        remoteCreated == null ? DataDestination.local : DataDestination.both;
 
-    await _handleLocalStorage(created, remoteCreated);
-    return (created, ds);
+    TEntity? remoteCreated;
+    if (canSync && serverId != null) {
+      try {
+        remoteCreated = await putRemote(entity);
+      } catch (error) {
+        await db.concludeLocalChange(pending, error: error);
+        return (entity, DataDestination.local);
+      }
+    }
+
+    if (remoteCreated == null) {
+      return (entity, DataDestination.local);
+    }
+    await _concludePutSuccess(pending, remoteCreated);
+    return (remoteCreated, DataDestination.both);
   }
 
   Future<(TEntity, DataDestination)> post(TEntity entity) async {
-    // Check authorization before attempting remote operations
+    final pending = _pendingPut(entity);
+    await db.transaction(() => db.insertLocalChange(pending));
+
     final canSync = await requestAuthorizationService.canSync();
-    final remoteCreated = canSync ? await putRemote(entity) : null;
-    final created = remoteCreated ?? entity;
-    final ds =
-        remoteCreated == null ? DataDestination.local : DataDestination.both;
 
-    await _handleLocalStorage(created, remoteCreated);
-    return (created, ds);
-  }
-
-  Future<void> _handleLocalStorage(
-      TEntity entity, TEntity? remoteCreated) async {
-    await db.transaction(() async {
-      if (remoteCreated == null) {
-        await _createPendingChange(entity);
-      } else {
-        await _concludeEntityChanges(entity);
+    TEntity? remoteCreated;
+    if (canSync) {
+      try {
+        remoteCreated = await putRemote(entity);
+      } catch (error) {
+        await db.concludeLocalChange(pending, error: error);
+        return (entity, DataDestination.local);
       }
-    });
+    }
+
+    if (remoteCreated == null) {
+      return (entity, DataDestination.local);
+    }
+    await _concludePutSuccess(pending, remoteCreated);
+    return (remoteCreated, DataDestination.both);
   }
 
-  Future<void> _createPendingChange(TEntity entity) async {
-    final localChange = PendingLocalChange.put(
+  PendingLocalChange _pendingPut(TEntity entity) {
+    return PendingLocalChange.put(
       entityData: syncHandler.marshal(entity),
       entityType: syncHandler.entityType,
       entityId: syncHandler.getClientId(entity),
       entityRev: syncHandler.getRev(entity),
     );
-    await db.insertLocalChange(localChange);
   }
 
-  Future<void> _concludeEntityChanges(TEntity entity) async {
-    await db.concludeEntityLocalChanges(
-      syncHandler.entityType,
-      syncHandler.getServerId(entity),
-      Operation.put,
-    );
-    await syncHandler.upsertLocal(entity);
+  Future<void> _concludePutSuccess(
+      PendingLocalChange pending, TEntity remoteCreated) async {
+    await db.transaction(() async {
+      await db.concludeLocalChange(pending, persistedToRemote: true);
+      await db.concludeEntityLocalChanges(
+        syncHandler.entityType,
+        syncHandler.getServerId(remoteCreated),
+        Operation.put,
+      );
+      await syncHandler.upsertLocal(remoteCreated);
+    });
   }
 
   @protected
@@ -106,38 +124,49 @@ abstract class SyncEntityRepository<TAppDatabase extends SynchronizerDb,
       // Graceful fallback to local storage when network is unavailable
       return null;
     }
-    // All other exceptions are logged by the adapter and will propagate
+    // Other exceptions propagate to put/post, which record them on the
+    // already-enqueued pending change.
   }
 
+  /// Same outbox ordering as [put]/[post]: the delete change is enqueued
+  /// (replacing any queued put for the same entity) before the remote
+  /// attempt. A record the server never knew about concludes immediately.
   Future<DataDestination> delete(TEntity entity) async {
-    // Check authorization before attempting remote operations
-    final canSync = await requestAuthorizationService.canSync();
-    final synced = canSync ? await deleteRemote(entity) : false;
-    final ds = synced ? DataDestination.both : DataDestination.local;
-
-    await _handleDeleteStorage(entity, synced);
-    return ds;
-  }
-
-  Future<void> _handleDeleteStorage(TEntity entity, bool synced) async {
-    await db.transaction(() async {
-      await syncHandler.deleteLocal(entity);
-      if (!synced) {
-        await _createDeletePendingChange(entity);
-      } else {
-        await _concludeDeleteChanges(entity);
-      }
-    });
-  }
-
-  Future<void> _createDeletePendingChange(TEntity entity) async {
-    final localChange = PendingLocalChange.delete(
+    final pending = PendingLocalChange.delete(
       entityType: syncHandler.entityType,
       data: syncHandler.marshal(entity),
       entityId: syncHandler.getClientId(entity),
       entityRev: syncHandler.getRev(entity),
     );
-    await db.insertLocalChange(localChange);
+    await db.transaction(() async {
+      await syncHandler.deleteLocal(entity);
+      await db.insertLocalChange(pending);
+    });
+
+    if (syncHandler.getServerId(entity) == null) {
+      await db.concludeLocalChange(pending, persistedToRemote: true);
+      return DataDestination.local;
+    }
+
+    final canSync = await requestAuthorizationService.canSync();
+    bool synced = false;
+    if (canSync) {
+      try {
+        synced = await deleteRemote(entity);
+      } catch (error) {
+        await db.concludeLocalChange(pending, error: error);
+        return DataDestination.local;
+      }
+    }
+
+    if (!synced) {
+      return DataDestination.local;
+    }
+    await db.transaction(() async {
+      await db.concludeLocalChange(pending, persistedToRemote: true);
+      await _concludeDeleteChanges(entity);
+    });
+    return DataDestination.both;
   }
 
   Future<void> _concludeDeleteChanges(TEntity entity) async {
@@ -156,6 +185,7 @@ abstract class SyncEntityRepository<TAppDatabase extends SynchronizerDb,
       // Graceful fallback to local storage when network is unavailable
       return false;
     }
-    // All other exceptions are logged by the adapter and will propagate
+    // Other exceptions propagate to delete, which records them on the
+    // already-enqueued pending change.
   }
 }

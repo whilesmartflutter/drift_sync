@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.1
+
+### Fixed
+
+* `SyncEntityRepository.put()`/`post()`/`delete()` now enqueue the pending
+  local change *before* attempting the remote call (outbox ordering).
+  Previously any non-`UnavailableException` failure — e.g. a server
+  validation rejection — escaped before the pending change was written,
+  permanently orphaning the record: saved locally but invisible to the sync
+  loop, never retried, never quarantined, absent from sync history. Remote
+  failures are now recorded on the queued change, handing retry/backoff/
+  quarantine to the synchronizer, and these methods no longer rethrow.
+* `delete()` of a never-synced entity (no server id) no longer calls
+  `deleteRemote`; the change concludes immediately, also removing any
+  queued put for the same entity.
+
 ## 0.2.0
 
 ### Behavioral change

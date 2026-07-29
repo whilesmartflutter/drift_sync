@@ -169,6 +169,7 @@ class FakeHandler extends SyncTypeHandler<TestEntity, String, int> {
 
   // Behavior queues — each call dequeues one entry; empty = use default.
   final List<Object> putRemoteThrows = [];
+  final List<Object> deleteRemoteThrows = [];
   final List<Object> getAllRemoteThrows = [];
   final List<Object> assignClientIdThrows = [];
   final List<TestEntity> assignedIds = [];
@@ -266,6 +267,7 @@ class FakeHandler extends SyncTypeHandler<TestEntity, String, int> {
   @override
   Future<void> deleteRemote(TestEntity entity) async {
     deletedRemote.add(entity);
+    if (deleteRemoteThrows.isNotEmpty) throw deleteRemoteThrows.removeAt(0);
     if (entity.id != null) remoteItems.remove(entity.id);
   }
 
