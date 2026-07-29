@@ -244,7 +244,13 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
     PendingLocalChange localChange,
     SyncTypeHandler<dynamic, dynamic, dynamic> handler,
   ) async {
-    final entity = await handler.unmarshal(localChange.data);
+    final dynamic entity;
+    try {
+      entity = await handler.unmarshal(localChange.data);
+    } catch (e) {
+      // An immutable queued payload that fails to parse can never succeed.
+      throw UnmarshalException(localChange.entityType, e);
+    }
     if (localChange.deleted) {
       // For delete operations, try to use server ID if available
       final serverId = handler.getServerId(entity);
@@ -258,10 +264,12 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
 
     // For put operations
     if (!await handler.shouldPersistRemote(entity)) {
-      _logger.info(
-        'Skipping sync for ${handler.entityType}:${handler.getClientId(entity)} - dependencies not ready',
+      // Recorded on the row (transient) so sync history can show why the
+      // change is waiting instead of leaving it silently pending.
+      throw DependencyPendingException(
+        '${handler.entityType}:${handler.getClientId(entity)} '
+        'has unsynced dependencies',
       );
-      return;
     }
 
     final updated = await handler.putRemote(entity);

@@ -21,5 +21,7 @@ typedef FailureClassifier = FailureClass Function(Object error);
 /// classifier (e.g. `restFailureClassifier`) to the synchronizer.
 FailureClass defaultFailureClassifier(Object error) {
   if (error is UnavailableException) return FailureClass.transient;
+  if (error is DependencyPendingException) return FailureClass.transient;
+  if (error is UnmarshalException) return FailureClass.permanent;
   return FailureClass.unknown;
 }

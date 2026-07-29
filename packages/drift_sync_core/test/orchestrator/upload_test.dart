@@ -120,7 +120,9 @@ void main() {
           reason: 'pending change still concluded (nothing to retry)');
     });
 
-    test('skips put when shouldPersistRemote returns false', () async {
+    test(
+        'records a transient dependency-pending error when '
+        'shouldPersistRemote refuses', () async {
       wallet.shouldPersistRemoteResult = false;
       await db.insertLocalChange(_put(
         entityType: 'wallet',
@@ -130,8 +132,29 @@ void main() {
       await sync.uploadLocalChanges();
 
       expect(wallet.putRemoteCalls, isEmpty);
-      expect(db.allPending, hasLength(1),
-          reason: 'pending change preserved for next cycle');
+      final row = db.allPending.single;
+      expect(row.error, contains('dependencies'));
+      expect(row.quarantinedAt, isNull,
+          reason: 'transient — retried once dependencies sync');
+      expect(row.attemptCount, 1);
+    });
+
+    test('quarantines an unparseable queued payload on the first attempt',
+        () async {
+      await db.insertLocalChange(PendingLocalChange.put(
+        entityType: 'wallet',
+        entityId: 'w-bad',
+        entityRev: '1',
+        entityData: const {'clientId': 123},
+      ));
+
+      await sync.uploadLocalChanges();
+
+      expect(wallet.putRemoteCalls, isEmpty);
+      final row = db.allPending.single;
+      expect(row.error, contains('UnmarshalException'));
+      expect(row.quarantinedAt, isNotNull,
+          reason: 'an immutable payload that cannot parse never will');
     });
 
     test('returns false on UnavailableException, leaves pending intact',

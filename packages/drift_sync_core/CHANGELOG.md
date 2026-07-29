@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.3
+
+### Fixed
+
+* A queued payload that fails to unmarshal now throws `UnmarshalException`,
+  classified permanent — quarantined and surfaced on the first attempt
+  instead of burning the unknown-failure retry budget.
+* A change deferred by `shouldPersistRemote` now records a transient
+  `DependencyPendingException` on the row, so sync history can show why it
+  is waiting instead of leaving it silently pending.
+
 ## 0.3.2
 
 ### Improved
