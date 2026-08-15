@@ -94,6 +94,15 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
     }
   }
 
+  /// Whether [handler] may down-sync this cycle.
+  ///
+  /// Both download phases share this so a handler opting out of the dependency
+  /// cascade is honoured consistently; [SyncDependencyManagerBase.canSync]
+  /// stays a truthful answer about the dependency graph alone.
+  bool _shouldDownload(SyncTypeHandler<dynamic, dynamic, dynamic> handler) =>
+      _dependencyManager.canSync(handler) ||
+      handler.downloadIgnoresFailedDependencies;
+
   /// Logs and routes the error to the crash reporter unconditionally.
   void _reportError(
     Object error,
@@ -364,7 +373,7 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
           throw const CancelException();
         }
 
-        if (!_dependencyManager.canSync(handler)) {
+        if (!_shouldDownload(handler)) {
           _logger.info(
             'Skipping ${handler.entityType} client-id assignment - dependencies not synced',
           );
@@ -512,10 +521,7 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
           _logger.finest('... cancel requested. Will leave.');
           throw const CancelException();
         }
-        if (!_dependencyManager.canSync(handler) &&
-            !handler.canSyncWithoutDependencies) {
-          continue;
-        }
+        if (!_shouldDownload(handler)) continue;
         _logger.info('started handler for ${handler.entityType}');
 
         if (handler.skipDownSync) {

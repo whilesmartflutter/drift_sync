@@ -152,7 +152,7 @@ class FakeHandler extends SyncTypeHandler<TestEntity, String, int> {
   FakeHandler({
     required this.entityType,
     this.shouldPersistRemoteResult = true,
-    this.canSyncWithoutDependencies = false,
+    this.downloadIgnoresFailedDependencies = false,
   });
 
   @override
@@ -161,7 +161,7 @@ class FakeHandler extends SyncTypeHandler<TestEntity, String, int> {
   bool shouldPersistRemoteResult;
 
   @override
-  final bool canSyncWithoutDependencies;
+  final bool downloadIgnoresFailedDependencies;
 
   /// When set, entities matching this predicate are deferred by
   /// [shouldPersistLocal] (unmet local dependency).

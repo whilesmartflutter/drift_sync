@@ -197,7 +197,7 @@ void main() {
       final dependency = FakeHandler(entityType: 'transaction');
       final dependent = FakeHandler(
         entityType: 'transfer',
-        canSyncWithoutDependencies: true,
+        downloadIgnoresFailedDependencies: true,
       );
       dependency.getAllRemoteThrows.add(Exception('failed dependency'));
       dependent.remoteItems[1] = TestEntity(
