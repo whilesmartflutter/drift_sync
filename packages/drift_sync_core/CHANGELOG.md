@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.4
+
+### Fixed
+
+* Local persistence and its outbox entry can be committed together while the
+  remote attempt continues in the background.
+* Handlers that can park missing dependencies may continue downloading after
+  an earlier dependency fails.
+* Empty and failed model downloads expose their latest attempt to clients.
+
 ## 0.3.3
 
 ### Fixed

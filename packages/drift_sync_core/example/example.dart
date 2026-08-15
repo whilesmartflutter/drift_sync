@@ -40,7 +40,8 @@ class TodoHandler extends SyncTypeHandler<Todo, String, int>
   }
 
   @override
-  Future<Todo> getLocalByClientId(String clientId) async => throw UnimplementedError();
+  Future<Todo> getLocalByClientId(String clientId) async =>
+      throw UnimplementedError();
   @override
   Future<Todo?> getLocalByServerId(int serverId) async => null;
   @override
@@ -53,7 +54,9 @@ class TodoHandler extends SyncTypeHandler<Todo, String, int>
   @override
   Future<Todo?> getRemote(int serverId) async => null;
   @override
-  Future<List<Todo>> getAllRemote({DateTime? syncedSince, bool? noClientId}) async => const [];
+  Future<List<Todo>> getAllRemote(
+          {DateTime? syncedSince, bool? noClientId}) async =>
+      const [];
   @override
   Future<Todo> putRemote(Todo entity) async => entity;
   @override

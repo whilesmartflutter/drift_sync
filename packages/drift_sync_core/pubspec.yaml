@@ -1,6 +1,6 @@
 name: drift_sync_core
 description: Offline-first synchronization engine for Drift databases. Three-phase reconciliation, typed outcomes, pluggable transport.
-version: 0.3.3
+version: 0.3.4
 homepage: https://github.com/whilesmartflutter/drift_sync
 repository: https://github.com/whilesmartflutter/drift_sync
 issue_tracker: https://github.com/whilesmartflutter/drift_sync/issues
@@ -19,13 +19,7 @@ dependencies:
   dio: ^5.8.0+1
   drift: ^2.26.0
   meta: ^1.16.0
+  test: ^1.24.0
 
 dev_dependencies:
   lints: ^4.0.0
-  # `lib/testing.dart` (the contract-test entry point) imports
-  # `package:test`. Consumers that opt into that entry point must add
-  # `test` to their own dev_dependencies. Keeping `test` out of runtime
-  # `dependencies` avoids cross-version resolution conflicts (Flutter
-  # SDK pins of `matcher`/`test_api`, analyzer-version battles with
-  # `freezed`, etc.) for apps that don't run the contract suite.
-  test: ^1.24.0

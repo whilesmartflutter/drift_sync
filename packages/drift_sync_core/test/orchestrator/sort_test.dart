@@ -19,7 +19,8 @@ void main() {
     test('parents upload before dependents', () async {
       final db = FakeSynchronizerDb();
       // Insert a transaction first, then a wallet — wrong order on disk.
-      await db.insertLocalChange(_put(entityType: 'transaction', clientId: 't1'));
+      await db
+          .insertLocalChange(_put(entityType: 'transaction', clientId: 't1'));
       await Future.delayed(const Duration(milliseconds: 1));
       await db.insertLocalChange(_put(entityType: 'wallet', clientId: 'w1'));
 
@@ -49,7 +50,8 @@ void main() {
 
     test('same-depth siblings sort by createMoment', () async {
       final db = FakeSynchronizerDb();
-      await db.insertLocalChange(_put(entityType: 'wallet', clientId: 'second'));
+      await db
+          .insertLocalChange(_put(entityType: 'wallet', clientId: 'second'));
       await Future.delayed(const Duration(milliseconds: 2));
       await db.insertLocalChange(_put(entityType: 'wallet', clientId: 'first'));
       // Reorder so the LATER-created one is at the front of getPendingLocalChanges
@@ -58,7 +60,8 @@ void main() {
       // upload first.
 
       final calls = <String>[];
-      final wallet = _RecordingHandler(FakeHandler(entityType: 'wallet'), calls);
+      final wallet =
+          _RecordingHandler(FakeHandler(entityType: 'wallet'), calls);
 
       final sync = TestSynchronizer(
         appDatabase: db,
@@ -76,12 +79,15 @@ void main() {
     test('three-level chain orders correctly', () async {
       final db = FakeSynchronizerDb();
       await db.insertLocalChange(_put(entityType: 'transfer', clientId: 'tr1'));
-      await db.insertLocalChange(_put(entityType: 'transaction', clientId: 't1'));
+      await db
+          .insertLocalChange(_put(entityType: 'transaction', clientId: 't1'));
       await db.insertLocalChange(_put(entityType: 'wallet', clientId: 'w1'));
 
       final calls = <String>[];
-      final wallet = _RecordingHandler(FakeHandler(entityType: 'wallet'), calls);
-      final tx = _RecordingHandler(FakeHandler(entityType: 'transaction'), calls);
+      final wallet =
+          _RecordingHandler(FakeHandler(entityType: 'wallet'), calls);
+      final tx =
+          _RecordingHandler(FakeHandler(entityType: 'transaction'), calls);
       final tf = _RecordingHandler(FakeHandler(entityType: 'transfer'), calls);
 
       final sync = TestSynchronizer(
@@ -108,7 +114,8 @@ void main() {
       await db.insertLocalChange(_put(entityType: 'category', clientId: 'c1'));
 
       final calls = <String>[];
-      final wallet = _RecordingHandler(FakeHandler(entityType: 'wallet'), calls);
+      final wallet =
+          _RecordingHandler(FakeHandler(entityType: 'wallet'), calls);
       final category =
           _RecordingHandler(FakeHandler(entityType: 'category'), calls);
 
