@@ -10,6 +10,8 @@ abstract class SyncTypeHandler<TEntity, TKey, TServerKey> {
   /// Use for entity types that are only pushed (e.g. media that comes with transactions).
   bool get skipDownSync => false;
 
+  bool get canSyncWithoutDependencies => false;
+
   // Get the client ID (string) from an entity
   String getClientId(TEntity entity);
 
@@ -148,5 +150,6 @@ abstract class SyncTypeHandler<TEntity, TKey, TServerKey> {
 /// This allows the synchronizer to process changes incrementally instead of
 /// loading all remote items into memory at once.
 abstract class PagedSyncTypeHandler<TEntity> {
-  Stream<List<TEntity>> getAllRemoteStream({DateTime? syncedSince, bool? noClientId});
+  Stream<List<TEntity>> getAllRemoteStream(
+      {DateTime? syncedSince, bool? noClientId});
 }

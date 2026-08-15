@@ -512,7 +512,10 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
           _logger.finest('... cancel requested. Will leave.');
           throw const CancelException();
         }
-        if (!_dependencyManager.canSync(handler)) continue;
+        if (!_dependencyManager.canSync(handler) &&
+            !handler.canSyncWithoutDependencies) {
+          continue;
+        }
         _logger.info('started handler for ${handler.entityType}');
 
         if (handler.skipDownSync) {
@@ -570,6 +573,10 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
             }
 
             if (!sawAny) {
+              await appDatabase.recordEntitySyncAttempt(
+                handler.entityType,
+                attemptedAt: DateTime.now(),
+              );
               _dependencyManager.markSuccessfullySynced(handler);
               continue;
             }
@@ -593,6 +600,10 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
                 await handler.getAllRemote(syncedSince: syncedSince);
 
             if (changedItems.isEmpty) {
+              await appDatabase.recordEntitySyncAttempt(
+                handler.entityType,
+                attemptedAt: DateTime.now(),
+              );
               _dependencyManager.markSuccessfullySynced(handler);
               continue;
             }
@@ -622,11 +633,20 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
           }
 
           _dependencyManager.markSuccessfullySynced(handler);
+          await appDatabase.recordEntitySyncAttempt(
+            handler.entityType,
+            attemptedAt: DateTime.now(),
+          );
           _logger.info(
               'synced ${handler.entityType} in ${sw.elapsedMilliseconds}ms');
         } on UnavailableException {
           rethrow;
         } catch (e, stack) {
+          await appDatabase.recordEntitySyncAttempt(
+            handler.entityType,
+            attemptedAt: DateTime.now(),
+            error: e,
+          );
           final context = <String, Object?>{
             'handler_type': handler.entityType,
             'operation': 'time_based_partial_resync',

@@ -26,6 +26,7 @@ mixin SynchronizerDb {
   Future<List<PendingLocalChange>> getPendingLocalChanges();
   Future<void> cancelAllLocalChanges();
   Future<void> clearDatabase();
+
   /// Concludes an upload attempt. With [error] set the change stays queued
   /// for retry (implementations should increment its attempt count); with
   /// [quarantine] also true the change is permanently parked — excluded from
@@ -38,6 +39,12 @@ mixin SynchronizerDb {
   });
   Future<List<LocalSyncMetadata>> getLocalSyncMetadataList();
   Future<LocalSyncMetadata?> getLocalSyncMetadata(String id);
+
+  Future<void> recordEntitySyncAttempt(
+    String entityType, {
+    required DateTime attemptedAt,
+    Object? error,
+  }) async {}
   Future<void> insertLocalChange(PendingLocalChange localChange);
 
   Future<void> concludeEntityLocalChanges(
@@ -51,7 +58,8 @@ mixin SynchronizerDb {
     DateTime? lastSyncedAt,
   });
 
-  Future<R> transaction<R>(Future<R> Function() body, {bool requireNew = false});
+  Future<R> transaction<R>(Future<R> Function() body,
+      {bool requireNew = false});
 
   /// Parking store for down-synced items deferred by
   /// [SyncTypeHandler.shouldPersistLocal]. The defaults are no-ops (parking

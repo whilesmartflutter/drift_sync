@@ -9,9 +9,7 @@ class FakeSynchronizerDb with SynchronizerDb {
 
   @override
   Future<List<PendingLocalChange>> getPendingLocalChanges() async {
-    return _pending
-        .where((c) => c.error == null)
-        .toList(growable: false);
+    return _pending.where((c) => c.error == null).toList(growable: false);
   }
 
   @override
@@ -87,6 +85,21 @@ class FakeSynchronizerDb with SynchronizerDb {
   }
 
   @override
+  Future<void> recordEntitySyncAttempt(
+    String entityType, {
+    required DateTime attemptedAt,
+    Object? error,
+  }) async {
+    final current = _metadata[entityType];
+    _metadata[entityType] = LocalSyncMetadata(
+      entityType: entityType,
+      lastSyncedAt: current?.lastSyncedAt,
+      lastAttemptedAt: attemptedAt,
+      lastError: error?.toString(),
+    );
+  }
+
+  @override
   Future<R> transaction<R>(
     Future<R> Function() body, {
     bool requireNew = false,
@@ -139,12 +152,16 @@ class FakeHandler extends SyncTypeHandler<TestEntity, String, int> {
   FakeHandler({
     required this.entityType,
     this.shouldPersistRemoteResult = true,
+    this.canSyncWithoutDependencies = false,
   });
 
   @override
   final String entityType;
 
   bool shouldPersistRemoteResult;
+
+  @override
+  final bool canSyncWithoutDependencies;
 
   /// When set, entities matching this predicate are deferred by
   /// [shouldPersistLocal] (unmet local dependency).
@@ -213,7 +230,6 @@ class FakeHandler extends SyncTypeHandler<TestEntity, String, int> {
       if (e.clientId.isNotEmpty) localItems[e.clientId] = e;
     }
   }
-
 
   @override
   Future<void> deleteLocal(TestEntity entity) async {

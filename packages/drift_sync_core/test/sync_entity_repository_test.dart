@@ -3,13 +3,17 @@ import 'package:test/test.dart';
 
 import '_fakes.dart';
 
-class TestRepo extends SyncEntityRepository<FakeSynchronizerDb, TestEntity,
-    String, int> {
+class TestRepo
+    extends SyncEntityRepository<FakeSynchronizerDb, TestEntity, String, int> {
   const TestRepo({
     required super.syncHandler,
     required super.db,
     required super.requestAuthorizationService,
   });
+
+  Future<TestEntity> saveNew(Future<TestEntity> Function() persistLocal) {
+    return persistAndPost(persistLocal);
+  }
 }
 
 void main() {
@@ -37,6 +41,20 @@ void main() {
   }
 
   group('post', () {
+    test('commits the local write and outbox entry together', () async {
+      auth.authorized = false;
+      var localWriteWasTransactional = false;
+
+      final entity = await repo.saveNew(() async {
+        localWriteWasTransactional = db.inTransaction;
+        return const TestEntity(clientId: 'a');
+      });
+
+      expect(entity.clientId, 'a');
+      expect(localWriteWasTransactional, isTrue);
+      expect(pendingFor('a'), isNotNull);
+    });
+
     test('successful remote create leaves no pending change', () async {
       final (created, ds) = await repo.post(const TestEntity(clientId: 'a'));
 
@@ -94,8 +112,7 @@ void main() {
 
   group('put', () {
     test('successful remote update leaves no pending change', () async {
-      final (_, ds) =
-          await repo.put(const TestEntity(clientId: 'a', id: 7));
+      final (_, ds) = await repo.put(const TestEntity(clientId: 'a', id: 7));
 
       expect(ds, DataDestination.both);
       expect(db.allPending, isEmpty);

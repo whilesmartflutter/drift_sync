@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:drift_sync_core/drift_sync_core.dart';
 import 'package:meta/meta.dart';
 
@@ -30,6 +32,39 @@ abstract class SyncEntityRepository<TAppDatabase extends SynchronizerDb,
   final TAppDatabase db;
   final RequestAuthorizationService requestAuthorizationService;
 
+  Future<void> enqueuePut(TEntity entity) {
+    return db.insertLocalChange(_pendingPut(entity));
+  }
+
+  @protected
+  Future<TEntity> persistAndPost(
+    Future<TEntity> Function() persistLocal,
+  ) async {
+    return _persistAndQueue(persistLocal, create: true);
+  }
+
+  @protected
+  Future<TEntity> persistAndPut(
+    Future<TEntity> Function() persistLocal,
+  ) async {
+    return _persistAndQueue(persistLocal, create: false);
+  }
+
+  Future<TEntity> _persistAndQueue(
+    Future<TEntity> Function() persistLocal, {
+    required bool create,
+  }) async {
+    late TEntity entity;
+    late PendingLocalChange pending;
+    await db.transaction(() async {
+      entity = await persistLocal();
+      pending = _pendingPut(entity);
+      await db.insertLocalChange(pending);
+    });
+    unawaited(_attemptPut(entity, pending, create: create));
+    return entity;
+  }
+
   @protected
   Future<TEntity?> getRemote(TServerKey id) async {
     try {
@@ -47,48 +82,37 @@ abstract class SyncEntityRepository<TAppDatabase extends SynchronizerDb,
   Future<(TEntity, DataDestination)> put(TEntity entity) async {
     final pending = _pendingPut(entity);
     await db.transaction(() => db.insertLocalChange(pending));
-
-    final canSync = await requestAuthorizationService.canSync();
-    final serverId = syncHandler.getServerId(entity);
-
-    TEntity? remoteCreated;
-    if (canSync && serverId != null) {
-      try {
-        remoteCreated = await putRemote(entity);
-      } catch (error) {
-        await db.concludeLocalChange(pending, error: error);
-        return (entity, DataDestination.local);
-      }
-    }
-
-    if (remoteCreated == null) {
-      return (entity, DataDestination.local);
-    }
-    await _concludePutSuccess(pending, remoteCreated);
-    return (remoteCreated, DataDestination.both);
+    return _attemptPut(entity, pending, create: false);
   }
 
   Future<(TEntity, DataDestination)> post(TEntity entity) async {
     final pending = _pendingPut(entity);
     await db.transaction(() => db.insertLocalChange(pending));
+    return _attemptPut(entity, pending, create: true);
+  }
 
-    final canSync = await requestAuthorizationService.canSync();
-
-    TEntity? remoteCreated;
-    if (canSync) {
-      try {
-        remoteCreated = await putRemote(entity);
-      } catch (error) {
-        await db.concludeLocalChange(pending, error: error);
+  Future<(TEntity, DataDestination)> _attemptPut(
+    TEntity entity,
+    PendingLocalChange pending, {
+    required bool create,
+  }) async {
+    try {
+      final canSync = await requestAuthorizationService.canSync();
+      final serverId = syncHandler.getServerId(entity);
+      if (!canSync || (!create && serverId == null)) {
         return (entity, DataDestination.local);
       }
-    }
 
-    if (remoteCreated == null) {
+      final remoteCreated = await putRemote(entity);
+      if (remoteCreated == null) {
+        return (entity, DataDestination.local);
+      }
+      await _concludePutSuccess(pending, remoteCreated);
+      return (remoteCreated, DataDestination.both);
+    } catch (error) {
+      await db.concludeLocalChange(pending, error: error);
       return (entity, DataDestination.local);
     }
-    await _concludePutSuccess(pending, remoteCreated);
-    return (remoteCreated, DataDestination.both);
   }
 
   PendingLocalChange _pendingPut(TEntity entity) {
