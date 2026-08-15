@@ -156,6 +156,37 @@ abstract class SyncEntityRepository<TAppDatabase extends SynchronizerDb,
   /// (replacing any queued put for the same entity) before the remote
   /// attempt. A record the server never knew about concludes immediately.
   Future<DataDestination> delete(TEntity entity) async {
+    final pending = await _enqueueDelete(entity);
+
+    if (syncHandler.getServerId(entity) == null) {
+      await db.concludeLocalChange(pending, persistedToRemote: true);
+      return DataDestination.local;
+    }
+
+    return _attemptDelete(entity, pending);
+  }
+
+  /// Non-blocking counterpart to [delete], mirroring [persistAndPost] and
+  /// [persistAndPut]: returns once the local deletion and its outbox entry are
+  /// durable, leaving the remote call to finish in the background.
+  ///
+  /// Prefer this on UI paths. Awaiting [delete] holds the caller for a full
+  /// network round trip even though the outbox already guarantees delivery,
+  /// and a failure there is recorded on the pending change for the
+  /// synchronizer to retry rather than reported back to the caller.
+  @protected
+  Future<void> persistAndDelete(TEntity entity) async {
+    final pending = await _enqueueDelete(entity);
+
+    if (syncHandler.getServerId(entity) == null) {
+      await db.concludeLocalChange(pending, persistedToRemote: true);
+      return;
+    }
+
+    unawaited(_attemptDelete(entity, pending));
+  }
+
+  Future<PendingLocalChange> _enqueueDelete(TEntity entity) async {
     final pending = PendingLocalChange.delete(
       entityType: syncHandler.entityType,
       data: syncHandler.marshal(entity),
@@ -166,12 +197,13 @@ abstract class SyncEntityRepository<TAppDatabase extends SynchronizerDb,
       await syncHandler.deleteLocal(entity);
       await db.insertLocalChange(pending);
     });
+    return pending;
+  }
 
-    if (syncHandler.getServerId(entity) == null) {
-      await db.concludeLocalChange(pending, persistedToRemote: true);
-      return DataDestination.local;
-    }
-
+  Future<DataDestination> _attemptDelete(
+    TEntity entity,
+    PendingLocalChange pending,
+  ) async {
     final canSync = await requestAuthorizationService.canSync();
     bool synced = false;
     if (canSync) {

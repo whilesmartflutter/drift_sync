@@ -184,6 +184,10 @@ class FakeHandler extends SyncTypeHandler<TestEntity, String, int> {
   Set<String> deletedNotIn = {};
   bool deleteAllLocalCalled = false;
 
+  /// Assign to let [deleteLocal] record whether it ran inside a transaction.
+  FakeSynchronizerDb? db;
+  bool deleteLocalWasTransactional = false;
+
   // Behavior queues — each call dequeues one entry; empty = use default.
   final List<Object> putRemoteThrows = [];
   final List<Object> deleteRemoteThrows = [];
@@ -233,6 +237,7 @@ class FakeHandler extends SyncTypeHandler<TestEntity, String, int> {
 
   @override
   Future<void> deleteLocal(TestEntity entity) async {
+    deleteLocalWasTransactional = db?.inTransaction ?? false;
     localItems.remove(entity.clientId);
     deletedClientIds.add(entity.clientId);
   }
