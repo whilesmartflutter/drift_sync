@@ -12,8 +12,8 @@ void main() {
 
     test('isSuccessfullySynced is false initially', () {
       final mgr = DefaultSyncDependencyManager();
-      expect(mgr.isSuccessfullySynced(FakeHandler(entityType: 'wallet')),
-          isFalse);
+      expect(
+          mgr.isSuccessfullySynced(FakeHandler(entityType: 'wallet')), isFalse);
     });
 
     test('markSuccessfullySynced flips isSuccessfullySynced', () {
@@ -67,8 +67,7 @@ void main() {
       final mgr = CustomDependencyManager({
         'transaction': {'wallet', 'category'},
       });
-      expect(mgr.getDependenciesByType('transaction'),
-          {'wallet', 'category'});
+      expect(mgr.getDependenciesByType('transaction'), {'wallet', 'category'});
       expect(mgr.getDependenciesByType('wallet'), isEmpty);
     });
   });

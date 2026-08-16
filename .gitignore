@@ -5,6 +5,7 @@
 .pub/
 build/
 pubspec.lock
+!packages/drift_sync_core/example/pubspec.lock
 
 # IDE
 .idea/

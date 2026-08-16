@@ -86,7 +86,7 @@ void main() {
       expect(db.allPending, isEmpty);
     });
 
-    test('throws InvalidStateException on concurrent sync', () async {
+    test('returns the in-flight Future on concurrent sync', () async {
       final db = FakeSynchronizerDb();
       final wallet = FakeHandler(entityType: 'wallet');
       final sync = TestSynchronizer(
@@ -97,7 +97,8 @@ void main() {
       );
 
       final first = sync.sync();
-      expect(() => sync.sync(), throwsA(isA<InvalidStateException>()));
+      final second = sync.sync();
+      expect(identical(first, second), isTrue);
       await first;
     });
 
@@ -137,8 +138,7 @@ void main() {
       );
 
       await sync.sync();
-      expect(wallet.putRemoteCalls, isEmpty,
-          reason: 'unauth must skip upload');
+      expect(wallet.putRemoteCalls, isEmpty, reason: 'unauth must skip upload');
       expect(db.allPending, hasLength(1),
           reason: 'pending change preserved when unauth');
     });
@@ -157,8 +157,7 @@ void main() {
       );
 
       await sync.sync();
-      expect(wallet.assignedIds, isEmpty,
-          reason: 'Phase 2 must be skipped');
+      expect(wallet.assignedIds, isEmpty, reason: 'Phase 2 must be skipped');
       expect(wallet.putRemoteCalls, isEmpty);
     });
 

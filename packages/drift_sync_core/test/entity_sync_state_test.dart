@@ -22,8 +22,7 @@ void main() {
       expect(state.cursor, isNull);
     });
 
-    test('exhaustive pattern match over EntitySyncState compiles and runs',
-        () {
+    test('exhaustive pattern match over EntitySyncState compiles and runs', () {
       final cases = <EntitySyncState>[
         const NeverSynced(),
         Healthy(lastSync: DateTime.utc(2026), cursor: null),

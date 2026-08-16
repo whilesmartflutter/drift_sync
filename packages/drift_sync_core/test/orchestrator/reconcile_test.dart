@@ -106,5 +106,31 @@ void main() {
       expect(tx.putRemoteCalls, isEmpty,
           reason: 'transaction skipped due to wallet failure');
     });
+
+    test('opted-in dependent still claims after a dependency failure',
+        () async {
+      wallet.remoteUnclaimed = [const TestEntity(clientId: '', id: 1)];
+      wallet.putRemoteThrows.add(Exception('wallet claim failure'));
+
+      final tx = FakeHandler(
+        entityType: 'transaction',
+        downloadIgnoresFailedDependencies: true,
+      );
+      tx.remoteUnclaimed = [const TestEntity(clientId: '', id: 10)];
+
+      final s = TestSynchronizer(
+        appDatabase: db,
+        typeHandlers: {wallet, tx},
+        dependencyManager: CustomDependencyManager({
+          'transaction': {'wallet'},
+        }),
+        requestAuthorizationService: FakeAuthService(),
+      );
+
+      await s.downloadModelsWithNoClientIds();
+
+      expect(tx.putRemoteCalls, hasLength(1),
+          reason: 'opt-out of the cascade applies to this phase too');
+    });
   });
 }

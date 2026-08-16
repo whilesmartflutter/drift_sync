@@ -10,6 +10,18 @@ abstract class SyncTypeHandler<TEntity, TKey, TServerKey> {
   /// Use for entity types that are only pushed (e.g. media that comes with transactions).
   bool get skipDownSync => false;
 
+  /// Allows down-sync to run even when a declared dependency failed this cycle.
+  ///
+  /// Ordering is unaffected — handlers still run in registration order — and
+  /// per-row reference checks still apply via [shouldPersistLocal]. This only
+  /// stops one handler's failure from cascading into a skip of its dependents.
+  ///
+  /// Only safe on handlers that override [shouldPersistLocal] to park rows
+  /// whose references are not yet local. Without that guard, rows persist with
+  /// dangling references, and foreign keys are not necessarily enforced at
+  /// runtime, so nothing will catch it.
+  bool get downloadIgnoresFailedDependencies => false;
+
   // Get the client ID (string) from an entity
   String getClientId(TEntity entity);
 
@@ -148,5 +160,6 @@ abstract class SyncTypeHandler<TEntity, TKey, TServerKey> {
 /// This allows the synchronizer to process changes incrementally instead of
 /// loading all remote items into memory at once.
 abstract class PagedSyncTypeHandler<TEntity> {
-  Stream<List<TEntity>> getAllRemoteStream({DateTime? syncedSince, bool? noClientId});
+  Stream<List<TEntity>> getAllRemoteStream(
+      {DateTime? syncedSince, bool? noClientId});
 }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:drift_sync_core/drift_sync_core.dart';
 import 'package:meta/meta.dart';
@@ -80,6 +81,27 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
 
   final SyncLogger _logger;
   final SyncCrashReporter? _crashReporter;
+
+  static String _payloadExcerpt(Map<String, dynamic> data,
+      {int maxLength = 2000}) {
+    try {
+      final encoded = jsonEncode(data);
+      return encoded.length > maxLength
+          ? '${encoded.substring(0, maxLength)}…'
+          : encoded;
+    } catch (_) {
+      return data.toString();
+    }
+  }
+
+  /// Whether [handler] may down-sync this cycle.
+  ///
+  /// Both download phases share this so a handler opting out of the dependency
+  /// cascade is honoured consistently; [SyncDependencyManagerBase.canSync]
+  /// stays a truthful answer about the dependency graph alone.
+  bool _shouldDownload(SyncTypeHandler<dynamic, dynamic, dynamic> handler) =>
+      _dependencyManager.canSync(handler) ||
+      handler.downloadIgnoresFailedDependencies;
 
   /// Logs and routes the error to the crash reporter unconditionally.
   void _reportError(
@@ -208,6 +230,11 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
             'is_deleted': localChange.deleted.toString(),
             'failure_class': failureClass.name,
             'quarantined': quarantine.toString(),
+            'attempt': '${localChange.attemptCount + 1}',
+            // The payload is essential for diagnosing unmarshal/serialization
+            // failures, where the exception alone (e.g. a null type cast)
+            // says nothing about which field was at fault.
+            'data': _payloadExcerpt(localChange.data),
           },
         );
         await appDatabase.concludeLocalChange(
@@ -226,7 +253,13 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
     PendingLocalChange localChange,
     SyncTypeHandler<dynamic, dynamic, dynamic> handler,
   ) async {
-    final entity = await handler.unmarshal(localChange.data);
+    final dynamic entity;
+    try {
+      entity = await handler.unmarshal(localChange.data);
+    } catch (e) {
+      // An immutable queued payload that fails to parse can never succeed.
+      throw UnmarshalException(localChange.entityType, e);
+    }
     if (localChange.deleted) {
       // For delete operations, try to use server ID if available
       final serverId = handler.getServerId(entity);
@@ -240,10 +273,12 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
 
     // For put operations
     if (!await handler.shouldPersistRemote(entity)) {
-      _logger.info(
-        'Skipping sync for ${handler.entityType}:${handler.getClientId(entity)} - dependencies not ready',
+      // Recorded on the row (transient) so sync history can show why the
+      // change is waiting instead of leaving it silently pending.
+      throw DependencyPendingException(
+        '${handler.entityType}:${handler.getClientId(entity)} '
+        'has unsynced dependencies',
       );
-      return;
     }
 
     final updated = await handler.putRemote(entity);
@@ -338,7 +373,7 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
           throw const CancelException();
         }
 
-        if (!_dependencyManager.canSync(handler)) {
+        if (!_shouldDownload(handler)) {
           _logger.info(
             'Skipping ${handler.entityType} client-id assignment - dependencies not synced',
           );
@@ -486,7 +521,7 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
           _logger.finest('... cancel requested. Will leave.');
           throw const CancelException();
         }
-        if (!_dependencyManager.canSync(handler)) continue;
+        if (!_shouldDownload(handler)) continue;
         _logger.info('started handler for ${handler.entityType}');
 
         if (handler.skipDownSync) {
@@ -544,6 +579,10 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
             }
 
             if (!sawAny) {
+              await appDatabase.recordEntitySyncAttempt(
+                handler.entityType,
+                attemptedAt: DateTime.now(),
+              );
               _dependencyManager.markSuccessfullySynced(handler);
               continue;
             }
@@ -567,6 +606,10 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
                 await handler.getAllRemote(syncedSince: syncedSince);
 
             if (changedItems.isEmpty) {
+              await appDatabase.recordEntitySyncAttempt(
+                handler.entityType,
+                attemptedAt: DateTime.now(),
+              );
               _dependencyManager.markSuccessfullySynced(handler);
               continue;
             }
@@ -596,11 +639,20 @@ abstract class DriftSynchronizer<TAppDatabase extends SynchronizerDb> {
           }
 
           _dependencyManager.markSuccessfullySynced(handler);
+          await appDatabase.recordEntitySyncAttempt(
+            handler.entityType,
+            attemptedAt: DateTime.now(),
+          );
           _logger.info(
               'synced ${handler.entityType} in ${sw.elapsedMilliseconds}ms');
         } on UnavailableException {
           rethrow;
         } catch (e, stack) {
+          await appDatabase.recordEntitySyncAttempt(
+            handler.entityType,
+            attemptedAt: DateTime.now(),
+            error: e,
+          );
           final context = <String, Object?>{
             'handler_type': handler.entityType,
             'operation': 'time_based_partial_resync',

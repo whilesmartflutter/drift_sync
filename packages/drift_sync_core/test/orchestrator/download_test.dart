@@ -31,11 +31,12 @@ void main() {
   });
 
   group('downloadServerChanges (non-paged)', () {
-    test('empty server response leaves cursor untouched', () async {
+    test('empty server response records a successful attempt', () async {
       // No remote items.
       await sync.downloadServerChanges();
-      expect(db.allMetadata['wallet'], isNull,
-          reason: 'no metadata written when nothing returned');
+      expect(db.allMetadata['wallet']?.lastSyncedAt, isNull);
+      expect(db.allMetadata['wallet']?.lastAttemptedAt, isNotNull);
+      expect(db.allMetadata['wallet']?.lastError, isNull);
     });
 
     test('persists items and writes cursor as max lastSyncedAt', () async {
@@ -152,8 +153,7 @@ void main() {
 
     test('writes Healthy state with cursor after successful sync', () async {
       final t = DateTime.utc(2026, 5, 1);
-      wallet.remoteItems[1] =
-          TestEntity(clientId: 'a', id: 1, lastSyncedAt: t);
+      wallet.remoteItems[1] = TestEntity(clientId: 'a', id: 1, lastSyncedAt: t);
 
       await sync.downloadServerChanges();
 
@@ -191,6 +191,35 @@ void main() {
 
       await s.downloadServerChanges();
       expect(calls, ['wallet:fetch', 'transaction:fetch']);
+    });
+
+    test('allows an opted-in dependent handler after a failure', () async {
+      final dependency = FakeHandler(entityType: 'transaction');
+      final dependent = FakeHandler(
+        entityType: 'transfer',
+        downloadIgnoresFailedDependencies: true,
+      );
+      dependency.getAllRemoteThrows.add(Exception('failed dependency'));
+      dependent.remoteItems[1] = TestEntity(
+        clientId: 'transfer-1',
+        id: 1,
+        lastSyncedAt: DateTime.utc(2026, 5, 1),
+      );
+
+      final s = TestSynchronizer(
+        appDatabase: db,
+        typeHandlers: {dependency, dependent},
+        dependencyManager: CustomDependencyManager({
+          'transfer': {'transaction'},
+        }),
+        requestAuthorizationService: FakeAuthService(),
+        skipClientIdReconciliation: true,
+      );
+
+      await s.downloadServerChanges();
+
+      expect(dependent.localItems, contains('transfer-1'));
+      expect(db.allMetadata['transaction']?.lastError, isNotNull);
     });
   });
 
@@ -408,7 +437,6 @@ class _OrderRecordingHandler extends FakeHandler {
     bool? noClientId,
   }) async {
     calls.add('$entityType:fetch');
-    return super
-        .getAllRemote(syncedSince: syncedSince, noClientId: noClientId);
+    return super.getAllRemote(syncedSince: syncedSince, noClientId: noClientId);
   }
 }

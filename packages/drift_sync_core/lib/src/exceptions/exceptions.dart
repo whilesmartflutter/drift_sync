@@ -3,3 +3,5 @@ export 'unavailable_exception.dart';
 export 'cancel_exception.dart';
 export 'notfound_exception.dart';
 export 'invalid_state_exception.dart';
+export 'unmarshal_exception.dart';
+export 'dependency_pending_exception.dart';

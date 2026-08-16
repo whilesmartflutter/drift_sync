@@ -9,9 +9,7 @@ class FakeSynchronizerDb with SynchronizerDb {
 
   @override
   Future<List<PendingLocalChange>> getPendingLocalChanges() async {
-    return _pending
-        .where((c) => c.error == null)
-        .toList(growable: false);
+    return _pending.where((c) => c.error == null).toList(growable: false);
   }
 
   @override
@@ -87,6 +85,21 @@ class FakeSynchronizerDb with SynchronizerDb {
   }
 
   @override
+  Future<void> recordEntitySyncAttempt(
+    String entityType, {
+    required DateTime attemptedAt,
+    Object? error,
+  }) async {
+    final current = _metadata[entityType];
+    _metadata[entityType] = LocalSyncMetadata(
+      entityType: entityType,
+      lastSyncedAt: current?.lastSyncedAt,
+      lastAttemptedAt: attemptedAt,
+      lastError: error?.toString(),
+    );
+  }
+
+  @override
   Future<R> transaction<R>(
     Future<R> Function() body, {
     bool requireNew = false,
@@ -139,12 +152,16 @@ class FakeHandler extends SyncTypeHandler<TestEntity, String, int> {
   FakeHandler({
     required this.entityType,
     this.shouldPersistRemoteResult = true,
+    this.downloadIgnoresFailedDependencies = false,
   });
 
   @override
   final String entityType;
 
   bool shouldPersistRemoteResult;
+
+  @override
+  final bool downloadIgnoresFailedDependencies;
 
   /// When set, entities matching this predicate are deferred by
   /// [shouldPersistLocal] (unmet local dependency).
@@ -167,8 +184,13 @@ class FakeHandler extends SyncTypeHandler<TestEntity, String, int> {
   Set<String> deletedNotIn = {};
   bool deleteAllLocalCalled = false;
 
+  /// Assign to let [deleteLocal] record whether it ran inside a transaction.
+  FakeSynchronizerDb? db;
+  bool deleteLocalWasTransactional = false;
+
   // Behavior queues — each call dequeues one entry; empty = use default.
   final List<Object> putRemoteThrows = [];
+  final List<Object> deleteRemoteThrows = [];
   final List<Object> getAllRemoteThrows = [];
   final List<Object> assignClientIdThrows = [];
   final List<TestEntity> assignedIds = [];
@@ -213,9 +235,9 @@ class FakeHandler extends SyncTypeHandler<TestEntity, String, int> {
     }
   }
 
-
   @override
   Future<void> deleteLocal(TestEntity entity) async {
+    deleteLocalWasTransactional = db?.inTransaction ?? false;
     localItems.remove(entity.clientId);
     deletedClientIds.add(entity.clientId);
   }
@@ -266,6 +288,7 @@ class FakeHandler extends SyncTypeHandler<TestEntity, String, int> {
   @override
   Future<void> deleteRemote(TestEntity entity) async {
     deletedRemote.add(entity);
+    if (deleteRemoteThrows.isNotEmpty) throw deleteRemoteThrows.removeAt(0);
     if (entity.id != null) remoteItems.remove(entity.id);
   }
 

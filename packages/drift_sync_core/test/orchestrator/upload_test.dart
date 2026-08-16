@@ -120,7 +120,9 @@ void main() {
           reason: 'pending change still concluded (nothing to retry)');
     });
 
-    test('skips put when shouldPersistRemote returns false', () async {
+    test(
+        'records a transient dependency-pending error when '
+        'shouldPersistRemote refuses', () async {
       wallet.shouldPersistRemoteResult = false;
       await db.insertLocalChange(_put(
         entityType: 'wallet',
@@ -130,8 +132,29 @@ void main() {
       await sync.uploadLocalChanges();
 
       expect(wallet.putRemoteCalls, isEmpty);
-      expect(db.allPending, hasLength(1),
-          reason: 'pending change preserved for next cycle');
+      final row = db.allPending.single;
+      expect(row.error, contains('dependencies'));
+      expect(row.quarantinedAt, isNull,
+          reason: 'transient — retried once dependencies sync');
+      expect(row.attemptCount, 1);
+    });
+
+    test('quarantines an unparseable queued payload on the first attempt',
+        () async {
+      await db.insertLocalChange(PendingLocalChange.put(
+        entityType: 'wallet',
+        entityId: 'w-bad',
+        entityRev: '1',
+        entityData: const {'clientId': 123},
+      ));
+
+      await sync.uploadLocalChanges();
+
+      expect(wallet.putRemoteCalls, isEmpty);
+      final row = db.allPending.single;
+      expect(row.error, contains('UnmarshalException'));
+      expect(row.quarantinedAt, isNotNull,
+          reason: 'an immutable payload that cannot parse never will');
     });
 
     test('returns false on UnavailableException, leaves pending intact',
@@ -149,8 +172,7 @@ void main() {
           reason: 'pending change preserved on transport failure');
     });
 
-    test('non-Unavailable error concludes pending change with error',
-        () async {
+    test('non-Unavailable error concludes pending change with error', () async {
       wallet.putRemoteThrows.add(Exception('500 server fart'));
       await db.insertLocalChange(_put(
         entityType: 'wallet',
@@ -162,8 +184,7 @@ void main() {
       expect(concluded, isTrue,
           reason: 'continues processing after non-transport error');
       // Pending change concluded with error → still in store but with error.
-      final remaining =
-          db.allPending.where((c) => c.entityId == 'w1').toList();
+      final remaining = db.allPending.where((c) => c.entityId == 'w1').toList();
       expect(remaining, hasLength(1));
       expect(remaining.single.error, contains('500 server fart'));
     });
@@ -186,8 +207,8 @@ void main() {
       await sync.uploadLocalChanges();
 
       expect(wallet.putRemoteCalls.length, 2);
-      expect(wallet.putRemoteCalls.map((e) => e.clientId).toList(),
-          ['w1', 'w2']);
+      expect(
+          wallet.putRemoteCalls.map((e) => e.clientId).toList(), ['w1', 'w2']);
     });
 
     test('local write + conclude commit inside one transaction', () async {
@@ -251,8 +272,7 @@ void main() {
       expect(row.attemptCount, 1);
     });
 
-    test('unknown failure escalates once the retry budget is spent',
-        () async {
+    test('unknown failure escalates once the retry budget is spent', () async {
       await db.insertLocalChange(
         _put(entityType: 'wallet', clientId: 'a').copyWith(attemptCount: 2),
       );
