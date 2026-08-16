@@ -9,6 +9,28 @@
 * Handlers that can park missing dependencies may continue downloading after
   an earlier dependency fails.
 * Empty and failed model downloads expose their latest attempt to clients.
+* The dependency bypass is honoured by both download phases. It previously
+  applied only to the time-based resync, so `downloadModelsWithNoClientIds`
+  kept skipping opted-in dependents — leaving server rows without a client
+  id unclaimed, and therefore dropped by regular download, for as long as a
+  dependency kept failing.
+
+### Changed
+
+* `SyncTypeHandler.canSyncWithoutDependencies` is renamed
+  `downloadIgnoresFailedDependencies`. It affects down-sync only — uploads
+  are gated by `shouldPersistRemote` — and only the failure cascade, not the
+  dependency relationship. Unreleased in any tagged version, so no consumer
+  is affected. Only safe on handlers that override `shouldPersistLocal` to
+  park rows whose references are not yet local.
+
+### Added
+
+* `SyncEntityRepository.persistAndDelete()`, the counterpart to
+  `persistAndPost`/`persistAndPut`. Returns once the local deletion and its
+  outbox entry are durable, leaving the remote call to finish in the
+  background, so UI paths are not held for a network round trip. `delete()`
+  is unchanged for callers that need the `DataDestination` result.
 
 ## 0.3.3
 
