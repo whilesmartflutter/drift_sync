@@ -227,8 +227,7 @@ void main() {
       expect(handler.deleteLocalWasTransactional, isTrue);
     });
 
-    test('concludes the pending change once the remote delete lands',
-        () async {
+    test('concludes the pending change once the remote delete lands', () async {
       handler.localItems['a'] = const TestEntity(clientId: 'a', id: 7);
 
       await repo.removeInBackground(const TestEntity(clientId: 'a', id: 7));
